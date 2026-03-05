@@ -45,6 +45,7 @@ env/
 *.swo
 *~
 .cursorrules
+*.code-workspace
 
 # 数据和日志
 data/

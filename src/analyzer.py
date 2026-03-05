@@ -595,7 +595,7 @@ class GeminiAnalyzer:
         """Check if LiteLLM is properly configured with at least one API key."""
         return self._router is not None or self._litellm_available
 
-    def _call_litellm(self, prompt: str, generation_config: dict) -> str:
+    def _call_litellm(self, prompt: str, generation_config: dict, max_retry_num: int = 5) -> str:
         """Call LLM via litellm with fallback across configured models.
 
         Args:
@@ -614,7 +614,7 @@ class GeminiAnalyzer:
         temperature = generation_config.get('temperature', 0.7)
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
-        models_to_try = [m for m in models_to_try if m]
+        models_to_try = [m for m in models_to_try if m] # TODO 填写了 api key 的模型都增加到列表中
 
         last_error = None
         for model in models_to_try:
@@ -622,36 +622,42 @@ class GeminiAnalyzer:
             if not keys:
                 logger.debug(f"[LiteLLM] Skipping {model}: no API keys")
                 continue
-            try:
-                model_short = model.split("/")[-1] if "/" in model else model
-                call_kwargs: Dict[str, Any] = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
-                extra = get_thinking_extra_body(model_short)
-                if extra:
-                    call_kwargs["extra_body"] = extra
+            for cnt in range(max_retry_num):
+                try:
+                    model_short = model.split("/")[-1] if "/" in model else model
+                    call_kwargs: Dict[str, Any] = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": self.SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    }
+                    extra = get_thinking_extra_body(model_short)
+                    if extra:
+                        call_kwargs["extra_body"] = extra
 
-                if self._router and model == config.litellm_model:
-                    response = self._router.completion(**call_kwargs)
-                else:
-                    call_kwargs["api_key"] = keys[0]
-                    call_kwargs.update(self._extra_litellm_params(model, config))
-                    response = litellm.completion(**call_kwargs)
+                    if self._router and model == config.litellm_model:
+                        response = self._router.completion(**call_kwargs)
+                    else:
+                        call_kwargs["api_key"] = keys[0]
+                        call_kwargs.update(self._extra_litellm_params(model, config))
+                        response = litellm.completion(**call_kwargs)
 
-                if response and response.choices and response.choices[0].message.content:
-                    return response.choices[0].message.content
-                raise ValueError("LLM returned empty response")
+                    if response and response.choices and response.choices[0].message.content:
+                        return response.choices[0].message.content
+                    raise ValueError("LLM returned empty response")
 
-            except Exception as e:
-                logger.warning(f"[LiteLLM] {model} failed: {e}")
-                last_error = e
-                continue
+                except Exception as e:
+                    logger.warning(f"[LiteLLM] {model} failed: {e}")
+                    last_error = e
+                    if isinstance(e, litellm.RateLimitError):
+                        import random
+                        t = random.random()*60 + 30
+                        logger.warning(f'Attempt {cnt} failed. Sleep for {t}s.')
+                        time.sleep(60)
+                    continue
 
         raise Exception(f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}")
     
