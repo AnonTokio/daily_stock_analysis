@@ -654,7 +654,7 @@ class GeminiAnalyzer:
                     last_error = e
                     if isinstance(e, litellm.RateLimitError):
                         import random
-                        t = random.random()*60 + 30
+                        t = random.random() * 60 + 120
                         logger.warning(f'Attempt {cnt} failed. Sleep for {t}s.')
                         time.sleep(60)
                     continue
